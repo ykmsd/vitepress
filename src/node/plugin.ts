@@ -50,7 +50,12 @@ export async function createVitePressPlugin(
     cleanUrls
   } = siteConfig
 
-  let markdownToVue: Awaited<ReturnType<typeof createMarkdownToVueRenderFn>>
+  let markdownToVue: Awaited<
+    ReturnType<typeof createMarkdownToVueRenderFn>
+  >['markdownToVue']
+  let invalidateMdCache: Awaited<
+    ReturnType<typeof createMarkdownToVueRenderFn>
+  >['invalidateMdCache']
 
   // lazy require plugin-vue to respect NODE_ENV in @vue/compiler-x
   const vuePlugin = await import('@vitejs/plugin-vue').then((r) =>
@@ -73,12 +78,17 @@ export async function createVitePressPlugin(
   let hasDeadLinks = false
   let config: ResolvedConfig
 
+  let moduleMap: Record<string, string[]> = {}
+
   const vitePressPlugin: Plugin = {
     name: 'vitepress',
 
     async configResolved(resolvedConfig) {
       config = resolvedConfig
-      markdownToVue = await createMarkdownToVueRenderFn(
+      let {
+        markdownToVue: _markdownToVue,
+        invalidateMdCache: _invalidateMdCache
+      } = await createMarkdownToVueRenderFn(
         srcDir,
         markdown,
         pages,
@@ -88,6 +98,8 @@ export async function createVitePressPlugin(
         lastUpdated,
         cleanUrls
       )
+      markdownToVue = _markdownToVue
+      invalidateMdCache = _invalidateMdCache
     },
 
     config() {
@@ -149,6 +161,9 @@ export async function createVitePressPlugin(
         }
         if (includes.length) {
           includes.forEach((i) => {
+            i = slash(i)
+            if (!moduleMap[i]) moduleMap[i] = [id]
+            else if (!moduleMap[i].includes(id)) moduleMap[i].push(id)
             this.addWatchFile(i)
           })
         }
@@ -289,6 +304,13 @@ export async function createVitePressPlugin(
 
         // overwrite src so vue plugin can handle the HMR
         ctx.read = () => vueSrc
+      }
+
+      if (moduleMap[file]) {
+        invalidateMdCache(moduleMap[file])
+        return moduleMap[file].map(
+          (id) => server.moduleGraph.getModuleById(id)!
+        )
       }
     }
   }

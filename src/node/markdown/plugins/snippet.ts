@@ -135,15 +135,15 @@ export const snippetPlugin = (md: MarkdownIt, srcDir: string) => {
   const fence = md.renderer.rules.fence!
 
   md.renderer.rules.fence = (...args) => {
-    const [tokens, idx, , { loader }] = args
+    const [tokens, idx, , { includes }] = args
     const token = tokens[idx]
     // @ts-ignore
     const tokenSrc = token.src
     const [src, regionName] = tokenSrc ? tokenSrc.split('#') : ['']
 
     if (src) {
-      if (loader) {
-        loader.addDependency(src)
+      if (includes) {
+        includes.push(src)
       }
       const isAFile = fs.lstatSync(src).isFile()
       if (fs.existsSync(src) && isAFile) {

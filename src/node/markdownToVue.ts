@@ -37,126 +37,138 @@ export async function createMarkdownToVueRenderFn(
 
   const replaceRegex = genReplaceRegexp(userDefines, isBuild)
 
-  return async (
-    src: string,
-    file: string,
-    publicDir: string
-  ): Promise<MarkdownCompileResult> => {
-    const relativePath = slash(path.relative(srcDir, file))
-    const dir = path.dirname(file)
-    const cacheKey = JSON.stringify({ src, file })
-
-    const cached = cache.get(cacheKey)
-    if (cached) {
-      debug(`[cache hit] ${relativePath}`)
-      return cached
-    }
-
-    const start = Date.now()
-
-    // resolve includes
-    let includes: string[] = []
-    src = src.replace(includesRE, (m, m1) => {
-      try {
-        const includePath = path.join(dir, m1)
-        const content = fs.readFileSync(includePath, 'utf-8')
-        includes.push(slash(includePath))
-        return content
-      } catch (error) {
-        return m // silently ignore error if file is not present
-      }
-    })
-
-    const { content, data: frontmatter } = matter(src)
-
-    // reset state before render
-    md.__path = file
-    md.__relativePath = relativePath
-
-    const html = md.render(content, {
-      path: file,
-      relativePath,
-      cleanUrls,
-      frontmatter
-    })
-    const data = md.__data
-
-    // validate data.links
-    const deadLinks: string[] = []
-    const recordDeadLink = (url: string) => {
-      console.warn(
-        c.yellow(
-          `\n(!) Found dead link ${c.cyan(url)} in file ${c.white(
-            c.dim(file)
-          )}\nIf it is intended, you can use:\n    ${c.cyan(
-            `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-          )}`
-        )
-      )
-      deadLinks.push(url)
-    }
-
-    if (data.links) {
+  return {
+    markdownToVue: async (
+      src: string,
+      file: string,
+      publicDir: string
+    ): Promise<MarkdownCompileResult> => {
+      const relativePath = slash(path.relative(srcDir, file))
       const dir = path.dirname(file)
-      for (let url of data.links) {
-        if (/\.(?!html|md)\w+($|\?)/i.test(url)) continue
+      const cacheKey = JSON.stringify({ src, file })
 
-        if (url.replace(EXTERNAL_URL_RE, '').startsWith('//localhost:')) {
-          recordDeadLink(url)
-          continue
+      const cached = cache.get(cacheKey)
+      if (cached) {
+        debug(`[cache hit] ${relativePath}`)
+        return cached
+      }
+
+      const start = Date.now()
+
+      // resolve includes
+      let includes: string[] = []
+      src = src.replace(includesRE, (m, m1) => {
+        try {
+          const includePath = path.join(dir, m1)
+          const content = fs.readFileSync(includePath, 'utf-8')
+          includes.push(slash(includePath))
+          return content
+        } catch (error) {
+          return m // silently ignore error if file is not present
         }
+      })
 
-        url = url.replace(/[?#].*$/, '').replace(/\.(html|md)$/, '')
-        if (url.endsWith('/')) url += `index`
-        const resolved = decodeURIComponent(
-          slash(
-            url.startsWith('/')
-              ? url.slice(1)
-              : path.relative(srcDir, path.resolve(dir, url))
+      const { content, data: frontmatter } = matter(src)
+
+      // reset state before render
+      md.__path = file
+      md.__relativePath = relativePath
+
+      const html = md.render(content, {
+        path: file,
+        relativePath,
+        cleanUrls,
+        frontmatter,
+        includes
+      })
+      const data = md.__data
+
+      // validate data.links
+      const deadLinks: string[] = []
+      const recordDeadLink = (url: string) => {
+        console.warn(
+          c.yellow(
+            `\n(!) Found dead link ${c.cyan(url)} in file ${c.white(
+              c.dim(file)
+            )}\nIf it is intended, you can use:\n    ${c.cyan(
+              `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+            )}`
           )
         )
-        if (
-          !pages.includes(resolved) &&
-          !fs.existsSync(path.resolve(dir, publicDir, `${resolved}.html`))
-        ) {
-          recordDeadLink(url)
+        deadLinks.push(url)
+      }
+
+      if (data.links) {
+        const dir = path.dirname(file)
+        for (let url of data.links) {
+          if (/\.(?!html|md)\w+($|\?)/i.test(url)) continue
+
+          if (url.replace(EXTERNAL_URL_RE, '').startsWith('//localhost:')) {
+            recordDeadLink(url)
+            continue
+          }
+
+          url = url.replace(/[?#].*$/, '').replace(/\.(html|md)$/, '')
+          if (url.endsWith('/')) url += `index`
+          const resolved = decodeURIComponent(
+            slash(
+              url.startsWith('/')
+                ? url.slice(1)
+                : path.relative(srcDir, path.resolve(dir, url))
+            )
+          )
+          if (
+            !pages.includes(resolved) &&
+            !fs.existsSync(path.resolve(dir, publicDir, `${resolved}.html`))
+          ) {
+            recordDeadLink(url)
+          }
         }
       }
+
+      const pageData: PageData = {
+        title: inferTitle(frontmatter, content),
+        titleTemplate: frontmatter.titleTemplate,
+        description: inferDescription(frontmatter),
+        frontmatter,
+        headers: data.headers || [],
+        relativePath
+      }
+
+      if (includeLastUpdatedData) {
+        pageData.lastUpdated = await getGitTimestamp(file)
+      }
+
+      const vueSrc =
+        genPageDataCode(data.hoistedTags || [], pageData, replaceRegex).join(
+          '\n'
+        ) +
+        `\n<template><div>${replaceConstants(
+          html,
+          replaceRegex,
+          vueTemplateBreaker
+        )}</div></template>`
+
+      debug(`[render] ${file} in ${Date.now() - start}ms.`)
+
+      const result = {
+        vueSrc,
+        pageData,
+        deadLinks,
+        includes
+      }
+      cache.set(cacheKey, result)
+      return result
+    },
+
+    invalidateMdCache: (files: string[]) => {
+      const keys = files.map((file) => JSON.stringify({ file }).slice(1))
+      ;[...cache.keys()].forEach((key) => {
+        if (keys.some((file) => key.endsWith(file))) {
+          cache.delete(key)
+        }
+      })
     }
-
-    const pageData: PageData = {
-      title: inferTitle(frontmatter, content),
-      titleTemplate: frontmatter.titleTemplate,
-      description: inferDescription(frontmatter),
-      frontmatter,
-      headers: data.headers || [],
-      relativePath
-    }
-
-    if (includeLastUpdatedData) {
-      pageData.lastUpdated = await getGitTimestamp(file)
-    }
-
-    const vueSrc =
-      genPageDataCode(data.hoistedTags || [], pageData, replaceRegex).join(
-        '\n'
-      ) +
-      `\n<template><div>${replaceConstants(
-        html,
-        replaceRegex,
-        vueTemplateBreaker
-      )}</div></template>`
-
-    debug(`[render] ${file} in ${Date.now() - start}ms.`)
-
-    const result = {
-      vueSrc,
-      pageData,
-      deadLinks,
-      includes
-    }
-    cache.set(cacheKey, result)
-    return result
   }
 }
 

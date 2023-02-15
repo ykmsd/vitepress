@@ -30,7 +30,7 @@
   --vp-c-green-dimm-3: rgba(16, 185, 129, 0.5);
 
   --vp-c-yellow: #eab308;
-  --vp-c-yellow-light: #facc15;
+  --vp-c-yellow-light: hsl(48, 96%, 40%);
   --vp-c-yellow-lighter: #fde047;
   --vp-c-yellow-dark: #ca8a04;
   --vp-c-yellow-darker: #a16207;
